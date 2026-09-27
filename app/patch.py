@@ -19,7 +19,7 @@ import hashlib
 import json
 from typing import Any
 
-from .merge import escape, parse_pointer
+from .merge import escape, json_equal, parse_pointer
 
 
 def generate_patch(base: Any, result: Any) -> list[dict]:
@@ -47,24 +47,6 @@ def _diff(base: Any, result: Any, path: str, ops: list[dict]) -> None:
     # At the root (path == "") RFC 6901 "" names the whole document, so a
     # root-level "replace" is likewise valid.
     ops.append({"op": "replace", "path": path, "value": result})
-
-
-def json_equal(a: Any, b: Any) -> bool:
-    """Deep equality with JSON-exact types.
-
-    Unlike Python's ``==`` this distinguishes ``True`` from ``1`` and ``1``
-    from ``1.0`` (and the same distinction inside arrays), so such changes
-    are never silently dropped from the patch.
-    """
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, dict):
-        return a.keys() == b.keys() and all(json_equal(a[k], b[k]) for k in a)
-    if isinstance(a, list):
-        return len(a) == len(b) and all(
-            json_equal(x, y) for x, y in zip(a, b)
-        )
-    return a == b
 
 
 class PatchApplyError(Exception):

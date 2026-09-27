@@ -808,3 +808,56 @@ def test_merge_analysis_no_conflicts_would_conflict_false(client):
 def test_merge_analysis_requires_base_left_right(client):
     resp = client.post("/merge-analysis", json={"base": {}, "left": {}})
     assert resp.status_code == 422
+
+
+def test_bool_vs_number_conflict_consistent_between_endpoints(client):
+    # base flag=false, left=1, right=true: booleans and numbers are
+    # distinct JSON values, so both endpoints must report a conflict at
+    # /flag with the same candidates - never an auto-merged result.
+    triple = {"base": {"flag": False}, "left": {"flag": 1}, "right": {"flag": True}}
+
+    created = client.post("/merges", json=triple)
+    assert created.status_code == 201, created.text
+    merge = created.json()
+    assert merge["status"] == "pending"
+    assert merge["result"] is None
+    assert merge["conflict_count"] == 1
+    conflict = merge["conflicts"][0]
+    assert conflict["pointer"] == "/flag"
+    assert conflict["base"] is False
+    assert conflict["left"] == 1
+    assert conflict["right"] is True
+    assert conflict["missing"] == []
+    assert merge["document"] == {"flag": {"__merge_conflict__": "/flag"}}
+
+    analysis = client.post("/merge-analysis", json=triple)
+    assert analysis.status_code == 200, analysis.text
+    body = analysis.json()
+    assert body["would_conflict"] is True
+    assert body["counts"]["conflict"] == 1
+    assert len(body["changes"]) == 1
+    record = body["changes"][0]
+    assert record["type"] == "conflict"
+    # Same path, same candidates as the merge order's conflict.
+    assert record["pointer"] == conflict["pointer"]
+    assert record["base"] is False
+    assert record["left"] == 1
+    assert record["right"] is True
+    assert record["missing"] == []
+
+
+def test_identical_bool_change_still_auto_merges(client):
+    # Both sides make the very same typed change: no conflict anywhere.
+    triple = {"base": {"flag": False}, "left": {"flag": True}, "right": {"flag": True}}
+
+    created = client.post("/merges", json=triple)
+    assert created.status_code == 201, created.text
+    merge = created.json()
+    assert merge["status"] == "resolved"
+    assert merge["conflict_count"] == 0
+    assert merge["result"] == {"flag": True}
+
+    analysis = client.post("/merge-analysis", json=triple).json()
+    assert analysis["would_conflict"] is False
+    assert analysis["counts"]["conflict"] == 0
+    assert analysis["changes"][0]["type"] == "same_change"

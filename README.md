@@ -52,6 +52,8 @@ EVIDENCE_HMAC_KEY=<至少 32 字节的随机密钥> docker compose up --build
 | 一侧删除、另一侧未改 | 自动删除 |
 | 一侧删除、另一侧修改 | **冲突**（`missing` 字段标记删除侧） |
 
+「是否修改 / 是否同值」按 **JSON 类型严格的递归相等** 判断（`POST /merges` 与 `POST /merge-analysis` 共用同一语义）：布尔与数字不相等（`true` ≠ `1`）、整数与浮点数不相等（`1` ≠ `1.0`），对象与数组按同样规则逐元素比较；缺失键（`missing`）与显式 `null` 也始终区分。因此 `base=false, left=1, right=true` 会在该路径形成冲突，而不会误判为「双侧同改」直接解决。
+
 冲突处在 `document` 中保留占位符：
 
 ```json

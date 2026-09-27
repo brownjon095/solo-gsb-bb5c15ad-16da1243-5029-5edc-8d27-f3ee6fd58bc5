@@ -10,6 +10,7 @@ from app.analysis import (
     analyze_merge,
 )
 from app.merge import merge3
+from app.patch import canonical_json
 
 
 def pointers_of(result, kind=None):
@@ -121,6 +122,42 @@ class MergeAnalysisTest(unittest.TestCase):
         self.assertEqual(find(result, "/o/a")["missing"], ["base", "right"])
         self.assertEqual(find(result, "/o/b")["missing"], ["base", "left"])
 
+    def test_strict_json_types_bool_vs_number_is_conflict(self):
+        # base flag=false, left=1, right=true: different JSON values, so
+        # the analysis must predict the conflict POST /merges would open.
+        result = analyze_merge({"flag": False}, {"flag": 1}, {"flag": True})
+        record = find(result, "/flag")
+        self.assertEqual(record["type"], CONFLICT)
+        self.assertEqual(
+            (record["base"], record["left"], record["right"]), (False, 1, True)
+        )
+        self.assertEqual(record["missing"], [])
+        self.assertTrue(result["would_conflict"])
+
+    def test_strict_json_types_int_vs_float_is_conflict(self):
+        result = analyze_merge({"n": 0}, {"n": 1}, {"n": 1.0})
+        record = find(result, "/n")
+        self.assertEqual(record["type"], CONFLICT)
+        self.assertTrue(result["would_conflict"])
+
+    def test_strict_json_types_inside_nested_values(self):
+        # The distinction applies recursively inside objects and arrays.
+        result = analyze_merge(
+            {"svc": {"flags": {"on": False}, "l": [0]}},
+            {"svc": {"flags": {"on": 1}, "l": [1]}},
+            {"svc": {"flags": {"on": True}, "l": [True]}},
+        )
+        self.assertEqual(
+            pointers_of(result, CONFLICT), ["/svc/flags/on", "/svc/l"]
+        )
+        self.assertTrue(result["would_conflict"])
+
+    def test_strict_json_types_same_typed_change_still_merges(self):
+        result = analyze_merge({"flag": False}, {"flag": True}, {"flag": True})
+        record = find(result, "/flag")
+        self.assertEqual(record["type"], SAME_CHANGE)
+        self.assertFalse(result["would_conflict"])
+
     def test_missing_key_distinct_from_explicit_null(self):
         # Left sets the key to null; right deletes the key: different changes.
         result = analyze_merge(
@@ -173,7 +210,9 @@ class MergeAnalysisTest(unittest.TestCase):
         self.assertEqual(pointers_of(result), ["/a~1b", "/c~0d"])
 
     def test_conflict_decisions_match_merge_engine(self):
-        # would_conflict and conflict pointers must equal merge3's output.
+        # would_conflict, conflict pointers and the candidate values must
+        # equal merge3's output. Candidates are compared via canonical
+        # JSON so the check itself keeps JSON types strict (1 vs true).
         cases = [
             ({"a": 1}, {"a": 2}, {"a": 3}),
             ({"a": {"x": 1}}, {}, {"a": {"x": 2}}),
@@ -182,6 +221,10 @@ class MergeAnalysisTest(unittest.TestCase):
             ({}, {"x": 1}, {"x": 2}),
             ({"a": 1}, {"a": 1, "b": 2}, {"a": 1, "b": 2}),
             (None, {"x": 1}, {"y": 2}),
+            ({"flag": False}, {"flag": 1}, {"flag": True}),
+            ({"n": 0}, {"n": 1}, {"n": 1.0}),
+            ({"o": {"on": False}}, {"o": {"on": 1}}, {"o": {"on": True}}),
+            ({"l": [0]}, {"l": [1]}, {"l": [True]}),
         ]
         for base, left, right in cases:
             with self.subTest(base=base, left=left, right=right):
@@ -191,6 +234,13 @@ class MergeAnalysisTest(unittest.TestCase):
                 analysis_pointers = pointers_of(result, CONFLICT)
                 self.assertEqual(analysis_pointers, engine_pointers)
                 self.assertEqual(result["would_conflict"], bool(conflicts))
+                for conflict in conflicts:
+                    record = find(result, conflict["pointer"])
+                    for field in ("base", "left", "right", "missing"):
+                        self.assertEqual(
+                            canonical_json(record[field]),
+                            canonical_json(conflict[field]),
+                        )
 
     def test_repeated_requests_are_identical(self):
         args = (

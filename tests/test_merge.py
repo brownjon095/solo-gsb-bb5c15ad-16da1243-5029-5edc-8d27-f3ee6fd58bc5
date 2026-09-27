@@ -70,6 +70,58 @@ class MergeEngineTest(unittest.TestCase):
         self.assertEqual(conflicts[0]["left"], [1, 2])
         self.assertEqual(conflicts[0]["right"], [1, 3])
 
+    def test_bool_and_number_are_distinct_changes(self):
+        # base flag=false, left=1, right=true: both sides changed to
+        # different JSON values, so this is a conflict - never an
+        # already-resolved merge.
+        doc, conflicts = merge3({"flag": False}, {"flag": 1}, {"flag": True})
+        self.assertEqual(doc, {"flag": {PLACEHOLDER_KEY: "/flag"}})
+        self.assertEqual(len(conflicts), 1)
+        c = conflicts[0]
+        self.assertEqual(c["pointer"], "/flag")
+        self.assertEqual((c["base"], c["left"], c["right"]), (False, 1, True))
+        self.assertEqual(c["missing"], [])
+
+    def test_bool_and_number_same_typed_change_still_merges(self):
+        doc, conflicts = merge3({"flag": False}, {"flag": True}, {"flag": True})
+        self.assertEqual(doc, {"flag": True})
+        self.assertEqual(conflicts, [])
+        doc, conflicts = merge3({"n": 0}, {"n": 1}, {"n": 1})
+        self.assertEqual(doc, {"n": 1})
+        self.assertEqual(conflicts, [])
+
+    def test_int_and_float_are_distinct_changes(self):
+        doc, conflicts = merge3({"n": 0}, {"n": 1}, {"n": 1.0})
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["pointer"], "/n")
+        self.assertEqual((conflicts[0]["left"], conflicts[0]["right"]), (1, 1.0))
+
+    def test_nested_bool_vs_number_conflicts(self):
+        base = {"svc": {"flags": {"on": False}}}
+        left = {"svc": {"flags": {"on": 1}}}
+        right = {"svc": {"flags": {"on": True}}}
+        doc, conflicts = merge3(base, left, right)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["pointer"], "/svc/flags/on")
+        self.assertEqual(
+            doc["svc"]["flags"]["on"], {PLACEHOLDER_KEY: "/svc/flags/on"}
+        )
+
+    def test_array_element_bool_vs_number_conflicts(self):
+        doc, conflicts = merge3({"l": [0]}, {"l": [1]}, {"l": [True]})
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0]["pointer"], "/l")
+        self.assertEqual(conflicts[0]["left"], [1])
+        self.assertEqual(conflicts[0]["right"], [True])
+
+    def test_identical_nested_values_still_merge(self):
+        base = {"o": {"l": [1, {"x": 2.5}], "s": "v"}}
+        left = {"o": {"l": [1, {"x": 2.5}], "s": "w"}}
+        right = {"o": {"l": [1, {"x": 2.5}], "s": "w"}}
+        doc, conflicts = merge3(base, left, right)
+        self.assertEqual(doc, {"o": {"l": [1, {"x": 2.5}], "s": "w"}})
+        self.assertEqual(conflicts, [])
+
     def test_pointer_escaping(self):
         self.assertEqual(parse_pointer("/a~1b/c~0d"), ["a/b", "c~d"])
         self.assertEqual(parse_pointer(""), [])

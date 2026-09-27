@@ -38,12 +38,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import audit
+from .merge import json_equal
 from .patch import (
     PatchApplyError,
     apply_patch,
     canonical_json,
     generate_patch,
-    json_equal,
 )
 
 # Environment variable holding the HMAC key, and its minimum length.

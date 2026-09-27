@@ -8,6 +8,14 @@ Merge rules (applied per JSON Pointer path):
   * delete vs. unchanged             -> delete
   * delete vs. modify                -> conflict
 
+"Changed" is decided by :func:`json_equal`, a strict JSON-type-aware
+recursive equality: booleans never equal numbers (``true`` != ``1``),
+integers never equal floats (``1`` != ``1.0``), objects and arrays compare
+element-by-element under the same rules, and an absent key (``MISSING``)
+never equals an explicit ``null``. Python's loose ``==`` (where
+``True == 1``) is never used, so a bool-vs-number divergence on the two
+surfaces as a conflict instead of being silently auto-merged.
+
 Conflict locations keep a placeholder in the working document and both
 candidates are returned to the client.
 """
@@ -43,9 +51,26 @@ def parse_pointer(pointer: str) -> list[str]:
     return [unescape(tok) for tok in pointer.split("/")[1:]]
 
 
-def _eq(a: Any, b: Any) -> bool:
+def json_equal(a: Any, b: Any) -> bool:
+    """Strict, MISSING-aware JSON equality, shared by every merge decision.
+
+    Unlike Python's ``==`` this distinguishes ``True`` from ``1`` and ``1``
+    from ``1.0`` (booleans, integers and floats are different JSON types),
+    and applies the same rules recursively inside objects and arrays, so a
+    nested ``true`` vs ``1`` divergence is never mistaken for an identical
+    change. ``MISSING`` only equals ``MISSING``: an absent key stays
+    distinct from an explicit JSON ``null``.
+    """
     if a is MISSING or b is MISSING:
         return a is MISSING and b is MISSING
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(json_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(
+            json_equal(x, y) for x, y in zip(a, b)
+        )
     return a == b
 
 
@@ -66,13 +91,13 @@ def merge3(base: Any, left: Any, right: Any) -> tuple[Any, list[dict]]:
 
 def _merge(base: Any, left: Any, right: Any, path: str, conflicts: list[dict]) -> Any:
     # Both sides agree: neither changed, or both made the same change.
-    if _eq(left, right):
+    if json_equal(left, right):
         return left
     # Only right changed.
-    if _eq(left, base):
+    if json_equal(left, base):
         return right
     # Only left changed.
-    if _eq(right, base):
+    if json_equal(right, base):
         return left
     # Both changed differently: recurse into objects, conflict otherwise.
     if isinstance(left, dict) and isinstance(right, dict):
