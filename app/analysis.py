@@ -23,8 +23,11 @@ Granularity follows the merge engine in :mod:`app.merge`:
     the walk never descends into the subtree, so its leaves are not
     counted again;
   * classification and therefore ``would_conflict`` are computed with the
-    exact same decisions as :func:`app.merge.merge3`, hence the flag
-    predicts whether ``POST /merges`` would create a pending order.
+    exact same decisions as :func:`app.merge.merge3` — both call
+    :func:`app.merge.values_equal`, the JSON-exact comparison that keeps
+    ``true`` distinct from ``1``, ``1`` from ``1.0`` and an absent key from
+    an explicit ``null`` — hence the flag predicts whether ``POST /merges``
+    would create a pending order.
 
 Everything here is pure and in-memory; nothing is ever persisted and the
 same triple always yields the same, pointer-sorted response.
@@ -34,7 +37,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .merge import MISSING, escape
+from .merge import MISSING, escape, values_equal
 
 LEFT_ONLY = "left_only"
 RIGHT_ONLY = "right_only"
@@ -42,19 +45,6 @@ SAME_CHANGE = "same_change"
 CONFLICT = "conflict"
 
 CATEGORIES = (LEFT_ONLY, RIGHT_ONLY, SAME_CHANGE, CONFLICT)
-
-
-def _same(a: Any, b: Any) -> bool:
-    """MISSING-aware equality, deliberately mirroring ``app.merge._eq``.
-
-    The loose ``==`` (so ``1`` and ``True`` are not distinguished) keeps
-    every classification decision identical to the merge engine's; an
-    absent side (``MISSING``) never equals a present value, including an
-    explicit ``None``.
-    """
-    if a is MISSING or b is MISSING:
-        return a is MISSING and b is MISSING
-    return a == b
 
 
 def _record(kind: str, path: str, base: Any, left: Any, right: Any) -> dict:
@@ -85,7 +75,7 @@ def _walk_one_side(
     absent) or a type replacement - is one record on the current path,
     which stops the walk from double-counting the subtree below.
     """
-    if _same(left, right):
+    if values_equal(left, right):
         # Child key present but equal on both sides: no change here.
         return
     changed = left if kind == LEFT_ONLY else right
@@ -106,8 +96,8 @@ def _walk_one_side(
 
 def _walk(base: Any, left: Any, right: Any, path: str, changes: list[dict]) -> None:
     # Both sides agree: no change, or both made the very same change.
-    if _same(left, right):
-        if _same(left, base):
+    if values_equal(left, right):
+        if values_equal(left, base):
             return
         # Identical change on both sides. An identical edit inside an
         # existing object is expanded to leaf paths; an added/deleted whole
@@ -126,10 +116,10 @@ def _walk(base: Any, left: Any, right: Any, path: str, changes: list[dict]) -> N
         changes.append(_record(SAME_CHANGE, path, base, left, right))
         return
     # Only one side changed: expand it into leaf/minimal records.
-    if _same(left, base):
+    if values_equal(left, base):
         _walk_one_side(RIGHT_ONLY, base, left, right, path, changes)
         return
-    if _same(right, base):
+    if values_equal(right, base):
         _walk_one_side(LEFT_ONLY, base, left, right, path, changes)
         return
     # Both sides changed differently: objects recurse (same key union and

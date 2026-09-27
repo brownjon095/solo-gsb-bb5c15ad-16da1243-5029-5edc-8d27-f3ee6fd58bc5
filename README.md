@@ -52,6 +52,8 @@ EVIDENCE_HMAC_KEY=<至少 32 字节的随机密钥> docker compose up --build
 | 一侧删除、另一侧未改 | 自动删除 |
 | 一侧删除、另一侧修改 | **冲突**（`missing` 字段标记删除侧） |
 
+**相等判定按 JSON 类型精确比较**（递归作用于嵌套对象与数组）：布尔值与数字不同（`true` ≠ `1`、`false` ≠ `0`）、整数与浮点数不同（`1` ≠ `1.0`）、缺失键与显式 `null` 不同。因此 `base` 为 `false`、`left` 为 `1`、`right` 为 `true` 会被判定为**双侧不同修改**（冲突），而不是“双侧同值”自动合并；只有真正同值（含类型）的修改才自动合并。`POST /merges` 与 `POST /merge-analysis` 共用同一套比较语义，因此冲突路径、候选值与 `would_conflict` 完全一致。
+
 冲突处在 `document` 中保留占位符：
 
 ```json
@@ -639,6 +641,8 @@ curl -s -X POST http://localhost:8000/merge-analysis \
 - 两侧都显式设为 `null` → `same_change` 且 `missing` 为空；
 - 一侧新增显式 `null`、另一侧未新增 → `left_only` / `right_only`，`missing` 同时包含 base 与未变更侧。
 
+**JSON 类型精确比较**：分类（含 `same_change` 与 `conflict` 的判定）与合并引擎共用同一套递归比较——`true` ≠ `1`、`1` ≠ `1.0`，嵌套对象与数组中的值同样区分；因此 `would_conflict` 与 `POST /merges` 实际产生的冲突路径、候选值始终一致。
+
 其余约定：
 
 - `changes` 按 `pointer` 字典序**稳定排序**；无任何变化时为 `[]`，各计数均为 `0`。
@@ -790,7 +794,7 @@ pip install -r requirements.txt
 pip install httpx pytest
 export EVIDENCE_HMAC_KEY=<至少 32 字节的密钥>   # 证据包签名密钥，缺失或过短无法启动
 uvicorn app.main:app --reload --port 8000   # 本地运行
-python -m pytest tests/ -q                  # 运行测试（230 项）
+python -m pytest tests/ -q                  # 运行测试（247 项）
 ```
 
 ## 项目结构

@@ -8,6 +8,12 @@ Merge rules (applied per JSON Pointer path):
   * delete vs. unchanged             -> delete
   * delete vs. modify                -> conflict
 
+"Changed" is decided by JSON-exact equality (see ``json_equal``): booleans
+differ from numbers (``true`` != ``1``), integers from floats (``1`` !=
+``1.0``), and an absent key from an explicit ``null`` — recursively through
+objects and arrays. The pre-merge analysis in :mod:`app.analysis` shares the
+same comparison, so its ``would_conflict`` prediction matches this engine.
+
 Conflict locations keep a placeholder in the working document and both
 candidates are returned to the client.
 """
@@ -43,10 +49,33 @@ def parse_pointer(pointer: str) -> list[str]:
     return [unescape(tok) for tok in pointer.split("/")[1:]]
 
 
-def _eq(a: Any, b: Any) -> bool:
+def json_equal(a: Any, b: Any) -> bool:
+    """Deep equality with JSON-exact types.
+
+    Unlike Python's ``==`` this distinguishes ``True`` from ``1`` and ``1``
+    from ``1.0`` (and the same distinction inside objects and arrays), so a
+    type-only change is never mistaken for an identical value.
+    """
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(json_equal(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(
+            json_equal(x, y) for x, y in zip(a, b)
+        )
+    return a == b
+
+
+def values_equal(a: Any, b: Any) -> bool:
+    """MISSING-aware JSON equality shared with the pre-merge analysis.
+
+    An absent key (``MISSING``) never equals a present value, including an
+    explicit ``None``; present values compare with :func:`json_equal`.
+    """
     if a is MISSING or b is MISSING:
         return a is MISSING and b is MISSING
-    return a == b
+    return json_equal(a, b)
 
 
 def merge3(base: Any, left: Any, right: Any) -> tuple[Any, list[dict]]:
@@ -66,13 +95,13 @@ def merge3(base: Any, left: Any, right: Any) -> tuple[Any, list[dict]]:
 
 def _merge(base: Any, left: Any, right: Any, path: str, conflicts: list[dict]) -> Any:
     # Both sides agree: neither changed, or both made the same change.
-    if _eq(left, right):
+    if values_equal(left, right):
         return left
     # Only right changed.
-    if _eq(left, base):
+    if values_equal(left, base):
         return right
     # Only left changed.
-    if _eq(right, base):
+    if values_equal(right, base):
         return left
     # Both changed differently: recurse into objects, conflict otherwise.
     if isinstance(left, dict) and isinstance(right, dict):

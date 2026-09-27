@@ -808,3 +808,74 @@ def test_merge_analysis_no_conflicts_would_conflict_false(client):
 def test_merge_analysis_requires_base_left_right(client):
     resp = client.post("/merge-analysis", json={"base": {}, "left": {}})
     assert resp.status_code == 422
+
+
+def test_bool_number_type_change_conflicts_on_both_endpoints(client):
+    # base flag=false, left=1, right=true: JSON types differ, so both sides
+    # made *different* changes. Loose ``==`` would equate 1 and true and
+    # silently auto-resolve as a same-change.
+    payload = {"base": {"flag": False}, "left": {"flag": 1}, "right": {"flag": True}}
+
+    analysis = client.post("/merge-analysis", json=payload).json()
+    assert analysis["would_conflict"] is True
+    assert [c["pointer"] for c in analysis["changes"]] == ["/flag"]
+    record = analysis["changes"][0]
+    assert record["type"] == "conflict"
+    assert record["base"] is False
+    assert record["left"] == 1 and not isinstance(record["left"], bool)
+    assert record["right"] is True
+    assert record["missing"] == []
+
+    resp = client.post("/merges", json=payload)
+    assert resp.status_code == 201, resp.text
+    merge = resp.json()
+    assert merge["status"] == "pending"
+    assert [c["pointer"] for c in merge["conflicts"]] == ["/flag"]
+    conflict = merge["conflicts"][0]
+    assert conflict["base"] is False
+    assert conflict["left"] == 1 and not isinstance(conflict["left"], bool)
+    assert conflict["right"] is True
+    assert conflict["missing"] == []
+    assert merge["document"]["flag"] == {"__merge_conflict__": "/flag"}
+
+
+def test_int_float_and_nested_type_changes_conflict_consistently(client):
+    # Int vs float and the same distinction inside nested objects/arrays:
+    # the analysis records and the merge order's conflicts must agree.
+    payload = {
+        "base": {"n": 0, "db": {"ssl": 0}, "l": [1]},
+        "left": {"n": 1, "db": {"ssl": False}, "l": [True]},
+        "right": {"n": 1.0, "db": {"ssl": 0.0}, "l": [1.0]},
+    }
+    analysis = client.post("/merge-analysis", json=payload).json()
+    conflict_records = [c for c in analysis["changes"] if c["type"] == "conflict"]
+    assert [c["pointer"] for c in conflict_records] == ["/db/ssl", "/l", "/n"]
+    assert analysis["would_conflict"] is True
+    assert analysis["counts"]["conflict"] == 3
+
+    merge = client.post("/merges", json=payload).json()
+    assert merge["status"] == "pending"
+    assert [c["pointer"] for c in merge["conflicts"]] == ["/db/ssl", "/l", "/n"]
+    # Same candidates at every conflict path.
+    analysis_by_pointer = {c["pointer"]: c for c in conflict_records}
+    for conflict in merge["conflicts"]:
+        record = analysis_by_pointer[conflict["pointer"]]
+        for field in ("base", "left", "right", "missing"):
+            assert conflict[field] == record[field]
+
+
+def test_identical_bool_change_still_auto_merges_on_both_endpoints(client):
+    payload = {
+        "base": {"flag": False},
+        "left": {"flag": True},
+        "right": {"flag": True},
+    }
+    analysis = client.post("/merge-analysis", json=payload).json()
+    assert analysis["would_conflict"] is False
+    assert analysis["counts"]["same_change"] == 1
+
+    resp = client.post("/merges", json=payload)
+    assert resp.status_code == 201, resp.text
+    merge = resp.json()
+    assert merge["status"] == "resolved"
+    assert merge["result"] == {"flag": True}

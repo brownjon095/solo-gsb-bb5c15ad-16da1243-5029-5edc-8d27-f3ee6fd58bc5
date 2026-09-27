@@ -121,6 +121,48 @@ class MergeAnalysisTest(unittest.TestCase):
         self.assertEqual(find(result, "/o/a")["missing"], ["base", "right"])
         self.assertEqual(find(result, "/o/b")["missing"], ["base", "left"])
 
+    def test_bool_and_number_classified_as_conflict(self):
+        # base flag=false, left=1, right=true: JSON types differ, so the
+        # two sides made *different* changes — loose ``==`` would report a
+        # same_change and would_conflict=False.
+        result = analyze_merge({"flag": False}, {"flag": 1}, {"flag": True})
+        self.assertEqual(pointers_of(result, CONFLICT), ["/flag"])
+        record = find(result, "/flag")
+        self.assertIs(record["base"], False)
+        self.assertEqual(record["left"], 1)
+        self.assertNotIsInstance(record["left"], bool)
+        self.assertIs(record["right"], True)
+        self.assertEqual(record["missing"], [])
+        self.assertTrue(result["would_conflict"])
+
+    def test_int_and_float_classified_as_conflict(self):
+        result = analyze_merge({"n": 0}, {"n": 1}, {"n": 1.0})
+        self.assertEqual(pointers_of(result, CONFLICT), ["/n"])
+        record = find(result, "/n")
+        self.assertIsInstance(record["left"], int)
+        self.assertIsInstance(record["right"], float)
+        self.assertTrue(result["would_conflict"])
+
+    def test_type_distinction_recurses_into_objects_and_arrays(self):
+        result = analyze_merge(
+            {"db": {"ssl": False}, "l": [1]},
+            {"db": {"ssl": 1}, "l": [True]},
+            {"db": {"ssl": True}, "l": [1.0]},
+        )
+        self.assertEqual(pointers_of(result, CONFLICT), ["/db/ssl", "/l"])
+        self.assertTrue(result["would_conflict"])
+
+    def test_identical_bool_change_is_same_change(self):
+        result = analyze_merge({"flag": False}, {"flag": True}, {"flag": True})
+        self.assertEqual(pointers_of(result, SAME_CHANGE), ["/flag"])
+        self.assertFalse(result["would_conflict"])
+
+    def test_single_side_type_only_change_is_detected(self):
+        # left only retypes 1 -> True: a real change, not "unchanged".
+        result = analyze_merge({"n": 1}, {"n": True}, {"n": 1})
+        self.assertEqual(pointers_of(result, LEFT_ONLY), ["/n"])
+        self.assertFalse(result["would_conflict"])
+
     def test_missing_key_distinct_from_explicit_null(self):
         # Left sets the key to null; right deletes the key: different changes.
         result = analyze_merge(
@@ -182,6 +224,11 @@ class MergeAnalysisTest(unittest.TestCase):
             ({}, {"x": 1}, {"x": 2}),
             ({"a": 1}, {"a": 1, "b": 2}, {"a": 1, "b": 2}),
             (None, {"x": 1}, {"y": 2}),
+            # JSON-exact typing: bool vs number, int vs float, nested.
+            ({"flag": False}, {"flag": 1}, {"flag": True}),
+            ({"n": 0}, {"n": 1}, {"n": 1.0}),
+            ({"l": [1]}, {"l": [True]}, {"l": [1.0]}),
+            ({"o": {"x": False}}, {"o": {"x": 0}}, {"o": {"x": 0.0}}),
         ]
         for base, left, right in cases:
             with self.subTest(base=base, left=left, right=right):
